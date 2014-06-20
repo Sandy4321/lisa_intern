@@ -1,0 +1,139 @@
+import theano
+import pylearn2
+import numpy as np
+from pylearn2.utils import sharedX
+import theano.tensor as T
+from theano.tensor.shared_randomstreams import RandomStreams
+
+def project(w, x):
+        """
+        Takes a sequence of integers and projects (embeds) these labels
+        into a continuous space by concatenating the correspending
+        rows in the projection matrix W i.e. [2, 5] -> [W[2] ... W[5]]
+
+        Parameters
+        ----------
+        x : theano.tensor, int dtype
+            A vector of labels (or a matrix where each row is a sample in
+            a batch) which will be projected
+        """
+
+        #assert 'int' in x.dtype
+        #print x.ndim
+
+        if x.ndim == 2:
+            shape = (x.shape[0], x.shape[1] * w.shape[1])
+            return w[x.flatten()].reshape(shape)
+        elif x.ndim == 1:
+            return w[x].flatten()
+        else:
+            assert ValueError("project needs 1- or 2-dimensional input")
+
+def context(state_below):
+        "q^(h) from EQ. 2"
+        state_below = state_below.reshape((state_below.shape[0], dim, 6))
+        rval = C.dimshuffle('x', 0, 1) * state_below
+        rval = rval.sum(axis=2)
+
+        return rval
+
+def score(X,Y=None):
+    X = project(W,X)
+    q_h = context(X)
+    # this is used during training
+    if Y is not None:
+        q_w = project(W,Y).reshape((Y.shape[0], dim))
+        rval = (q_w * q_h).sum(axis=1) + B[Y].flatten()
+        # during nll
+    else:
+        q_w = W
+        rval = T.dot(q_h, q_w.T) + B.dimshuffle('x', 0)
+    return rval
+
+def delta(data):
+    X,Y=data
+    p_n = 1./v
+    return score(X,Y) - T.log(k*p_n)
+v = 10000.
+#vocab size
+k = 10
+dim = 256
+
+n = 10
+#num examples
+
+X = theano.shared(np.random.randint(0,v,size=(n,6)))
+#x.shape = (15,6)
+Y = theano.shared(np.random.randint(0,v,size=(n,1)))
+#y.shape = (15,1)
+W = sharedX(np.random.rand(v,dim))
+#w.shape = 10,5
+B = sharedX(np.random.rand(v,1))
+#b.shape = 10,1
+c = np.random.randint(0,100,(dim,6))
+C = sharedX(c)
+#c shape = 5,6
+#we get a column of 5 dimensions for each context word
+
+
+
+# #rproj = w[x.flatten()]
+# #rproj.shape
+# ##90,5
+# #shape = (x.shape[0], x.shape[1] * w.shape[1])
+# #rproj = rproj.reshape(shape)
+# #15 examples of 6 words each and 5 dim for each word
+# #so 15 rows. where each row has 6*5 dim
+# #sb = rproj.reshape(rproj.shape[0],k,6)
+# #sb.shape
+# #made it 15,5,6 now
+
+# #c shape is 1,5,6
+# #so that for each example we still use the same C columns
+# qh = (C.dimshuffle('x',0,1)*sharedX(sb)).sum(axis=2)
+
+# ally = np.arange(v).reshape(v,1)
+
+# qw = project(w,y)
+# allqw = project(w,ally)
+
+# swh = (qw*qh).sum(axis=1) + b[y].flatten()
+# sallwh = theano.tensor.dot(qh,allqw.T)+b[ally].flatten()
+
+# soft = theano.tensor.nnet.softmax(sallwh)
+# probsoft = T.diag(soft[(T.arange(y.shape[0]),y)])
+
+# esallwh = T.exp(sallwh)
+# eswh = T.exp(swh)
+# esallwh = esallwh.sum(axis=1)
+
+# prob = eswh/esallwh
+
+#done
+
+
+data = (X,Y)
+params = [ W,B,C]
+pos_ = theano.tensor.grad(score(X,Y)[0][0],params,disconnected_inputs='ignore')
+pos_coeff = 1 - T.nnet.sigmoid(delta(data))
+pos = []
+for param in pos_:
+    axes = [0]
+    axes.extend(['x' for item in range(param.ndim - 1)])
+    pos.append(pos_coeff.dimshuffle(axes)*param)
+
+#del pos_,pos_coeffls
+
+noise = np.ones((100*10),dtype='int32')
+noise_x = T.tile(X, (k, 1))
+neg_ = T.jacobian(score(noise_x, noise), params, disconnected_inputs='ignore')
+neg_coeff = T.nnet.sigmoid(delta((noise_x, noise)))
+neg = []
+for param in neg_:
+    axes = [0]
+    axes.extend(['x' for item in range(param.ndim - 1)])
+    tmp = neg_coeff.dimshuffle(axes) * param
+    new_shape = [X.shape[0], k]
+    new_shape.extend([tmp.shape[i] for i in range(1, tmp.ndim)])
+    neg.append(tmp.reshape(new_shape).sum(axis=1))
+#del neg_, neg_coeff
